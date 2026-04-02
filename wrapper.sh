@@ -78,8 +78,7 @@ fi
 
 # =============================================================================
 # REINDEX repair for corrupted system catalog indexes
-# Runs in single-user mode before starting Postgres normally.
-# This is safe because single-user mode has exclusive access to the data.
+# Runs in single-user mode as the postgres user before starting normally.
 # Remove this block once the database is healthy.
 # =============================================================================
 REPAIR_MARKER="$PGDATA/.reindex_complete"
@@ -87,22 +86,20 @@ REPAIR_MARKER="$PGDATA/.reindex_complete"
 if [ -f "$PGDATA/PG_VERSION" ] && [ ! -f "$REPAIR_MARKER" ]; then
   echo "=== Purple Sector: Repairing system catalog indexes ==="
 
-  # Run REINDEX SYSTEM in single-user mode with boosted memory
-  # Single-user mode bypasses normal startup and has exclusive catalog access
-  if postgres --single \
+  # Must run as postgres user (PG refuses to run as root)
+  # gosu is included in the official postgres Docker image
+  if gosu postgres postgres --single \
     -D "$PGDATA" \
-    -o "-c maintenance_work_mem=512MB" \
-    -o "-c work_mem=256MB" \
+    -c maintenance_work_mem=512MB \
+    -c work_mem=256MB \
     railway <<'EOSQL'
 REINDEX SYSTEM railway;
 EOSQL
   then
     echo "=== System catalog REINDEX completed successfully ==="
-    # Mark as complete so we don't repeat on every restart
     date > "$REPAIR_MARKER"
   else
     echo "=== WARNING: REINDEX SYSTEM failed (exit $?), will retry on next restart ==="
-    # Don't block startup — Postgres can still run with degraded indexes
   fi
 fi
 
