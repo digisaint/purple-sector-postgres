@@ -78,45 +78,29 @@ fi
 
 # =============================================================================
 # REINDEX repair for corrupted system catalog indexes
-# Starts Postgres, runs REINDEX via psql, then continues normal operation.
+# Runs in single-user mode as the postgres user before starting normally.
 # Remove this block once the database is healthy.
 # =============================================================================
 REPAIR_MARKER="$PGDATA/.reindex_complete"
 
 if [ -f "$PGDATA/PG_VERSION" ] && [ ! -f "$REPAIR_MARKER" ]; then
-  echo "=== Purple Sector: Scheduling post-startup REINDEX ==="
+  echo "=== Purple Sector: Repairing system catalog indexes ==="
 
-  # Background repair script that runs after Postgres is accepting connections
-  cat > /tmp/repair.sh <<'REPAIR'
-#!/bin/bash
-echo "=== Waiting for PostgreSQL to accept connections ==="
-for i in $(seq 1 60); do
-  if pg_isready -q -h /var/run/postgresql 2>/dev/null; then
-    echo "=== PostgreSQL is ready, starting REINDEX ==="
-
-    # REINDEX system catalogs (includes toast indexes)
-    if psql -h /var/run/postgresql -U postgres -d railway -c "REINDEX SYSTEM railway;" 2>&1; then
-      echo "=== REINDEX SYSTEM completed successfully ==="
-
-      # Also reindex user tables for good measure
-      psql -h /var/run/postgresql -U postgres -d railway -c "REINDEX DATABASE railway;" 2>&1
-      echo "=== REINDEX DATABASE completed ==="
-
-      date > "$PGDATA/.reindex_complete"
-      echo "=== All repairs complete, marker written ==="
-    else
-      echo "=== WARNING: REINDEX failed, will retry on next restart ==="
-    fi
-    exit 0
+  # Must run as postgres user (PG refuses to run as root)
+  # gosu is included in the official postgres Docker image
+  if gosu postgres postgres --single \
+    -D "$PGDATA" \
+    -c maintenance_work_mem=512MB \
+    -c work_mem=256MB \
+    railway <<'EOSQL'
+REINDEX SYSTEM railway;
+EOSQL
+  then
+    echo "=== System catalog REINDEX completed successfully ==="
+    date > "$REPAIR_MARKER"
+  else
+    echo "=== WARNING: REINDEX SYSTEM failed (exit $?), will retry on next restart ==="
   fi
-  sleep 2
-done
-echo "=== ERROR: PostgreSQL did not become ready in 120s ==="
-REPAIR
-  chmod +x /tmp/repair.sh
-
-  # Run repair in background so it doesn't block container startup
-  /tmp/repair.sh &
 fi
 
 # unset PGHOST to force psql to use Unix socket path
