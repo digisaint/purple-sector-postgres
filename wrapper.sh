@@ -76,6 +76,36 @@ if [ -f "$POSTGRES_CONF_FILE" ] && ! grep -q "pg_stat_statements" "$POSTGRES_CON
   fi
 fi
 
+# =============================================================================
+# REINDEX repair for corrupted system catalog indexes
+# Runs in single-user mode before starting Postgres normally.
+# This is safe because single-user mode has exclusive access to the data.
+# Remove this block once the database is healthy.
+# =============================================================================
+REPAIR_MARKER="$PGDATA/.reindex_complete"
+
+if [ -f "$PGDATA/PG_VERSION" ] && [ ! -f "$REPAIR_MARKER" ]; then
+  echo "=== Purple Sector: Repairing system catalog indexes ==="
+
+  # Run REINDEX SYSTEM in single-user mode with boosted memory
+  # Single-user mode bypasses normal startup and has exclusive catalog access
+  if postgres --single \
+    -D "$PGDATA" \
+    -o "-c maintenance_work_mem=512MB" \
+    -o "-c work_mem=256MB" \
+    railway <<'EOSQL'
+REINDEX SYSTEM railway;
+EOSQL
+  then
+    echo "=== System catalog REINDEX completed successfully ==="
+    # Mark as complete so we don't repeat on every restart
+    date > "$REPAIR_MARKER"
+  else
+    echo "=== WARNING: REINDEX SYSTEM failed (exit $?), will retry on next restart ==="
+    # Don't block startup — Postgres can still run with degraded indexes
+  fi
+fi
+
 # unset PGHOST to force psql to use Unix socket path
 # this is specific to Railway and allows
 # us to use PGHOST after the init
