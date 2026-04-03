@@ -86,39 +86,25 @@ REPAIR_MARKER="$PGDATA/.reindex_complete"
 if [ -f "$PGDATA/PG_VERSION" ] && [ ! -f "$REPAIR_MARKER" ]; then
   echo "=== Purple Sector: Scheduling post-startup REINDEX ==="
 
-  # Background repair script that runs after Postgres is accepting connections
+  # Background repair: corruption already fixed (TRUNCATE + toast REINDEX done).
+  # Just regenerate statistics and reset damaged pages flag.
   cat > /tmp/repair.sh <<'REPAIR'
 #!/bin/bash
 echo "=== Waiting for PostgreSQL to accept connections ==="
 for i in $(seq 1 60); do
   if pg_isready -q -h /var/run/postgresql 2>/dev/null; then
-    echo "=== PostgreSQL is ready, starting repair ==="
+    echo "=== PostgreSQL is ready, finalizing repair ==="
 
-    # Enable zero_damaged_pages to skip corrupted toast pages
-    # pg_statistic toast data is fully regenerable via ANALYZE
-    psql -h /var/run/postgresql -U postgres -d railway -c "ALTER SYSTEM SET zero_damaged_pages = on; SELECT pg_reload_conf();" 2>&1
+    # Reset zero_damaged_pages (corruption already fixed)
+    psql -h /var/run/postgresql -U postgres -d railway -c "ALTER SYSTEM RESET zero_damaged_pages;" 2>&1
+    psql -h /var/run/postgresql -U postgres -d railway -c "SELECT pg_reload_conf();" 2>&1
 
-    # Step 1: Clear corrupted pg_statistic (toast corruption source)
-    echo "=== Step 1: Clearing corrupted statistics ==="
-    psql -h /var/run/postgresql -U postgres -d railway -c "DELETE FROM pg_statistic;" 2>&1
-
-    # Step 2: Reindex system catalogs (toast is now clean)
-    echo "=== Step 2: REINDEX SYSTEM ==="
-    psql -h /var/run/postgresql -U postgres -d railway -c "REINDEX SYSTEM railway;" 2>&1
-
-    # Step 3: Reindex user tables
-    echo "=== Step 3: REINDEX DATABASE ==="
-    psql -h /var/run/postgresql -U postgres -d railway -c "REINDEX DATABASE railway;" 2>&1
-
-    # Step 4: Regenerate all statistics
-    echo "=== Step 4: ANALYZE ==="
+    # Regenerate statistics (pg_statistic was truncated during repair)
+    echo "=== Running ANALYZE to regenerate statistics ==="
     psql -h /var/run/postgresql -U postgres -d railway -c "ANALYZE;" 2>&1
 
-    # Step 5: Disable zero_damaged_pages (no longer needed)
-    psql -h /var/run/postgresql -U postgres -d railway -c "ALTER SYSTEM RESET zero_damaged_pages; SELECT pg_reload_conf();" 2>&1
-
     date > /var/lib/postgresql/data/pgdata/.reindex_complete
-    echo "=== All repairs complete, marker written ==="
+    echo "=== Repair finalized, marker written ==="
     exit 0
   fi
   sleep 2
